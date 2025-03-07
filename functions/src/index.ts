@@ -50,6 +50,8 @@ export {
 
 export * from "./triggerPubsubFunction"
 
+export { transcription } from "./webhooks"
+
 // Export the health check last so it is loaded last.
 export * from "./healthCheck"
 

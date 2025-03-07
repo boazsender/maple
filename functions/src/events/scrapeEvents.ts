@@ -1,5 +1,7 @@
 import { runWith } from "firebase-functions"
 import { DateTime } from "luxon"
+import { JSDOM } from "jsdom"
+import { AssemblyAI } from "assemblyai"
 import { logFetchError } from "../common"
 import { db, Timestamp } from "../firebase"
 import * as api from "../malegislature"
@@ -15,6 +17,10 @@ import {
   SpecialEventContent
 } from "./types"
 import { currentGeneralCourt } from "../shared"
+
+const assembly = new AssemblyAI({
+  apiKey: process.env.ASSEMBLY_API_KEY ? process.env.ASSEMBLY_API_KEY : ""
+})
 
 abstract class EventScraper<ListItem, Event extends BaseEvent> {
   private schedule
@@ -140,10 +146,47 @@ class HearingScraper extends EventScraper<HearingListItem, Hearing> {
 
   async getEvent({ EventId }: HearingListItem) {
     const content = HearingContent.check(await api.getHearing(EventId))
+    let maybeVideoURL = null
+    let transcript = null
+    const req = await fetch(
+      `https://malegislature.gov/Events/Hearings/Detail/${EventId}`
+    )
+    const res = await req.text()
+    if (res) {
+      const dom = new JSDOM(res)
+      if (dom) {
+        const maybeVideoSource =
+          dom.window.document.querySelectorAll("video source")
+        if (maybeVideoSource.length && maybeVideoSource[0]) {
+          const firstVideoSource = maybeVideoSource[0] as HTMLSourceElement
+          maybeVideoURL = firstVideoSource.src
+
+          transcript = await assembly.transcripts.transcribe({
+            webhook_url:
+              "https://us-central1-digital-testimony-dev.cloudfunctions.net/transcriptionWebHook",
+            audio: firstVideoSource.src,
+            auto_highlights: true,
+            custom_topics: true,
+            entity_detection: true,
+            format_text: true,
+            iab_categories: true,
+            punctuate: true,
+            sentiment_analysis: true,
+            speaker_labels: true,
+            summarization: true,
+            summary_model: "informative",
+            summary_type: "bullets"
+          })
+        }
+      }
+    }
     const event: Hearing = {
       id: `hearing-${content.EventId}`,
       type: "hearing",
       content,
+      videoURL: maybeVideoURL,
+      videoFetchedAt: maybeVideoURL ? Timestamp.now() : null,
+      videoAssemblyId: transcript ? transcript.id : null,
       ...this.timestamps(content)
     }
     return event
